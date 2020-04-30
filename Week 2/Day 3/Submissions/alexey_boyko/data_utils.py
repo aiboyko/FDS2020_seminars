@@ -7,7 +7,7 @@ import tarfile
 import urllib.request
 import zipfile
 import argparse
-
+import json
 from glob import glob
 
 def download_flights(
@@ -53,30 +53,54 @@ def jsonize(data_dir='data', n_rows=10000):
         print("done", flush=True)
 
         
-def load_dfs_from_jsons(data_dir='data', useDask=False):
+def load_dfs_from_jsons(data_dir='data', useDask=False, n_json_files=100):
     paths = glob(os.path.join(data_dir, 'flightjson/*json'))
-    n_json_files =  100
+    
     if not useDask:
         dfs = [pd.read_json(path, lines=True) for path in paths[:n_json_files]]
+        dfs = pd.concat(dfs)
     else:
         from dask import delayed
-        dfs2 = [delayed(pd.read_json(path, lines=True)) for path in paths[:n_json_files]]
-    dfs = pd.concat(dfs)
+        import dask.dataframe as dd
+
+        import dask.bag as db #os.path.join(data_dir, 'flightjson/*json'
+        mybag = delayed(db.read_text(paths).map(json.loads))
+
+        mybag.to_dataframe()
+
+        dfs = [(dd.read_json(path, lines=True)) for path in paths[:n_json_files]]
+        dfs = dd.concat(dfs)
+    
     return dfs
 
-def prepareData(dfs, activeTextFeatures=['UniqueCarrier', 'Origin', 'Dest'], features2drop=['CRSElapsedTime']):
+def prepareData(dfs,
+ activeTextFeatures=['UniqueCarrier', 'Origin', 'Dest'], features2drop=['CRSElapsedTime'],
+ useDask=False):
     '''X - pandas dataframe or its dask version'''
     allTextFeatures = set(['UniqueCarrier', 'Origin', 'Dest', 'TailNum'])
-    for col in dfs.columns: #remove all nans
-        dfs = dfs[dfs[col].notna()]
-        
-    y = dfs['DepDelay']
-    dfs = dfs[dfs.columns.drop('DepDelay')]
 
-    X = pd.concat([pd.get_dummies(dfs[col]) for col in activeTextFeatures], axis=1)
+    
+    dfs.columns.drop(['TaxiIn', 'TaxiOut'])
+    dfs = dfs.dropna()
+    y = dfs['DepDelay']
+    
+    dfs = dfs[dfs.columns.drop('DepDelay')]
     activeNonTextFeatures = dfs.columns.drop(allTextFeatures)
     activeNonTextFeatures = activeNonTextFeatures.drop(features2drop) #, 'ArrDelay'])    
-    X = pd.concat([X, dfs[activeNonTextFeatures]], axis=1)
+    
+
+    if not useDask:
+        X = pd.concat([pd.get_dummies(dfs[col]) for col in activeTextFeatures], axis=1)  
+        X = pd.concat([X, dfs[activeNonTextFeatures]], axis=1)
+        X = X.dropna(axis=1)
+    else:
+        import dask.dataframe as dd
+        # failed to implement categorical on delayed data
+        # dfs.categorize(columns=activeTextFeatures)
+        # X = dd.concat([dd.get_dummies(dfs[col]) for col in activeTextFeatures], axis=1)  
+        # X = dd.concat([X, dfs[activeNonTextFeatures]], axis=1)
+        X = dfs[activeNonTextFeatures]
+
     return X, y
 
 def grid_search2pd(grid_search):
